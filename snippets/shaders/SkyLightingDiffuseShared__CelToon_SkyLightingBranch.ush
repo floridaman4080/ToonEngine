@@ -1,0 +1,34 @@
+// =============================================================================
+// CelToon — Sky Lighting 固定色分支（非 Lumen 路径）
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/SkyLightingDiffuseShared.ush
+// 集成方式 : 插入到 SkyLightDiffuse(...) 函数里，位于 Epic 原有
+//            "if (GBuffer.ShadingModelID == SHADINGMODELID_SUBSURFACE ||
+//             GBuffer.ShadingModelID == SHADINGMODELID_PREINTEGRATED_SKIN)"
+//            这个块之后、"if (GBuffer.ShadingModelID == SHADINGMODELID_HAIR)"
+//            之前（或函数末尾 Hair/Cloth 分支之前任一位置均可，只要保证
+//            return 早于后面所有计算）。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+	// ====================================================================
+	// CelToon 暗部锁定（与 DiffuseIndirectComposite.usf 的固定色策略对齐）
+	// --------------------------------------------------------------------
+	//  - 直接 return 固定色，完全绕过 BentNormal、SkyVisData、GetSkySHDiffuse
+	//    的方向性采样以及 GBufferAO/ScreenAO 的遮蔽衰减。
+	//  - View.SkyLightColor 保留：允许日夜切换时整体亮度变化，但每个 CelToon
+	//    像素在同一帧得到完全相同的天光贡献（只取决于 BaseColor/SubColor）。
+	//  - CELTOON_SKYLIGHT_SCALE 控制天光占暗部的比重；如希望完全锁死为常值，
+	//    把 View.SkyLightColor.rgb 替换为 float3(1,1,1)。
+	//  - 该路径主要用于非 Lumen 场景（由 ReflectionEnvironmentPixelShader 调用）；
+	//    Lumen 场景下暗部由 DiffuseIndirectComposite 的固定色提供。
+	// ====================================================================
+	BRANCH
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		const float CELTOON_SKYLIGHT_SCALE = 0.65f;
+		float3 SubsurfaceColor = ExtractSubsurfaceColor(GBuffer);
+		float3 CelLighting = GBuffer.BaseColor * SubsurfaceColor * View.SkyLightColor.rgb * CELTOON_SKYLIGHT_SCALE;
+		return CelLighting * View.PreExposure;
+	}

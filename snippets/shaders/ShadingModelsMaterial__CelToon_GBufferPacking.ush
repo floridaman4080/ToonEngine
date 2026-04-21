@@ -1,0 +1,57 @@
+// =============================================================================
+// CelToon — GBuffer packing (方案 A + GBuffer E 借用)
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/ShadingModelsMaterial.ush
+// 集成方式 : 把下面整块粘到 Epic 原有 SetGBufferForShadingModel(...) 里最后一个
+//            "else if (ShadingModel == ...)" 之后，位于关掉 #if 的那一行之前。
+//            也就是这个 #if MATERIAL_SHADINGMODEL_CELTOON ... #endif 整块
+//            与上面的 Eye / Subsurface / ClearCoat 等 else-if 平级，是它们的
+//            最后一个兄弟分支。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// Author   : See Git log.
+// =============================================================================
+
+#if MATERIAL_SHADINGMODEL_CELTOON
+	else if (ShadingModel == SHADINGMODELID_CELTOON)
+	{
+		// ------------------------------------------------------------------
+		// CelToon GBuffer 打包（方案 A + GBuffer E 借用）：
+		//
+		// 【CustomData（GBuffer D）打包】保持不变：
+		//   - CustomData.rgb：阴影色（SubsurfaceColor 输入），被以下位置同时读取：
+		//       * SkyLightingDiffuseShared.ush     —— 天光 DiffuseColor *= SubColor
+		//       * DiffuseIndirectComposite.usf     —— Lumen 漫反射合成 DiffuseColor *= SubColor
+		//       * ReflectionEnvironmentPixelShader —— 环境反射分支（已屏蔽）
+		//   - CustomData.a  ：ShadowOffset（CustomData0 输入），在 ToonBxDF 内做 [0,1]→[-1,1]
+		//     映射后平移 NoL，实现"阴影边界可推拉"。
+		// 注意：不要用 EncodeSubsurfaceColor() 包 SubsurfaceColor——该函数默认带 sqrt
+		// 伽马校正，会把 0.5 变成 0.707，污染所有依赖"线性阈值"的下游代码。
+		//
+		// 【PrecomputedShadowFactors（GBuffer E）借用】新增：
+		//   前置承诺：本项目永不用 Lightmap 烘焙静态阴影（场景无 Lightmass 光照），
+		//   所有灯光 ShadowMapChannelMask 均为 0，GBuffer E 原本闲置。
+		//   借用映射（每通道 8 bit 精度，UI 上全部 [0,1]）：
+		//     .r = HighlightIntensity (复用 Metallic 材质引脚；在 ToonBxDF 内 * 8.0)
+		//     .g = RimWidth           (复用 CustomData1 材质引脚；在 ToonBxDF 内 * 0.5)
+		//     .b = 预留（规划：自阴影阈值 ShadowThreshold）
+		//     .a = 预留（未来扩展）
+		//   配套改动（缺一不可）：
+		//     1. BasePassCommon.ush            —— WRITES_PRECSHADOWFACTOR_TO_GBUFFER 强制写
+		//     2. GBufferHelpers.ush            —— Decode 跳过 SelectiveOutputMask 覆写
+		//     3. DeferredShadingCommon.ush     —— 同上
+		//     4. DeferredLightingCommon.ush    —— GetShadowTermsBase 强制 UsesStaticShadowMap=0
+		//     5. ShadingModels.ush::ToonBxDF   —— 从 PrecomputedShadowFactors 读参数
+		// ------------------------------------------------------------------
+		GBuffer.CustomData.rgb = saturate(SubsurfaceColor);
+		GBuffer.CustomData.a   = saturate(GetMaterialCustomData0(PixelMaterialInputs));
+
+		// 借 GBuffer E 存 CelToon 参数：覆盖 BasePassPixelShader 之前写入的 GetPrecomputedShadowMasks 默认值
+		GBuffer.PrecomputedShadowFactors = half4(
+			saturate(Metallic),                                          // .r HighlightIntensity
+			saturate(GetMaterialCustomData1(PixelMaterialInputs)),       // .g RimWidth
+			0.0h,                                                         // .b 预留
+			0.0h                                                          // .a 预留
+		);
+	}
+#endif

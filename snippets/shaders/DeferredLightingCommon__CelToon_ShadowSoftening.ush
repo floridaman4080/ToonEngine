@@ -1,0 +1,62 @@
+// =============================================================================
+// CelToon — 灯光衰减简化 + 自阴影边界软化
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/DeferredLightingCommon.ush
+// 集成方式 : 两个 BRANCH 块都插在"桌面端 DeferredLighting 主循环"内，
+//            紧跟 Epic 原代码：
+//                const bool bNeedsSeparateSubsurfaceLightAccumulation = UseSubsurfaceProfile(GBuffer.ShadingModelID);
+//            之后、Attenuation 或 NON_DIRECTIONAL_DIRECT_LIGHTING 计算之前。
+//            两个块是独立的（Block A 处理 Attenuation，Block B 处理 SurfaceShadow 软化），
+//            按顺序依次插入即可。
+//
+// 背景    : 
+//   Block A — CelToon 不需要随距离的物理衰减。点光/聚光打到卡通角色上，
+//             亮度阶梯只由 NoL 阈值决定，不应该随距离渐暗（卡通语义）。
+//   Block B — CSM / VSM 产生的 SurfaceShadow 原本是 [0,1] 连续值，直接乘到
+//             直接光上会和 ToonBxDF 内部的 NoL 硬阶梯产生"双锯齿"——外层阴影
+//             边界一层硬锯齿，ToonBxDF 色阶再一层硬切。用 smoothstep 把
+//             SurfaceShadow 重新软化到与 ToonBxDF 相同的 Softness，视觉上
+//             阴影边界就跟色阶完美同频。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — Attenuation 对 CelToon 强制 1（取消物理距离衰减）
+// -----------------------------------------------------------------------------
+
+			// --------------------------------------------------------
+			// CelToon 衰减处理（方案 A 简化版）：
+			//   - 外层 Attenuation 只负责屏蔽"点/聚光距离衰减"，不再做 NoL 阈值化；
+			//   - 漫反射/高光/边缘光的色阶切割已全部归口到 ToonBxDF 内部，
+			//     避免"外层 smoothstep + BxDF 内 smoothstep"双重阈值化产生不可控阶梯。
+			// --------------------------------------------------------
+			float3 Attenuation = 1;
+			BRANCH
+			if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+			{
+				// 让 CelToon 不再受点光/聚光距离衰减影响，光强只随 NoL 阈值（在 BxDF 内处理）
+				Attenuation = 1.0f;
+			}
+
+// -----------------------------------------------------------------------------
+// Block B — Shadow.SurfaceShadow / TransmissionShadow 按 ToonBxDF 的 Softness 软化
+// -----------------------------------------------------------------------------
+
+			// --------------------------------------------------------
+			// CelToon 自阴影边界软化（参照 5.7 文档 4.4）：
+			//   - 对 CSM/VSM 产生的 SurfaceShadow 做一次 smoothstep，让阴影边界与
+			//     BxDF 内部的色阶同频，避免原始阴影贴图"硬锯齿+卡通硬切"的双重割裂；
+			//   - 阈值默认取 0.5 居中；Softness 复用 ToonBxDF 的 Roughness 后半段，
+			//     调节材质 Roughness 即可联动阴影边界软硬。
+			//   - 想让美术单独控制阈值，可把 Threshold 换成 GBuffer.CustomData.b 并在
+			//     ShadingModelsMaterial.ush 里把该通道从 SubColor 单独拆出来。
+			// --------------------------------------------------------
+			BRANCH
+			if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+			{
+				float ToonSoftness = max(saturate(GBuffer.Roughness - 0.5f), 0.001f);
+				const float ShadowThreshold = 0.5f;
+				Shadow.SurfaceShadow      = smoothstep(ShadowThreshold - ToonSoftness, ShadowThreshold + ToonSoftness, Shadow.SurfaceShadow);
+				Shadow.TransmissionShadow = smoothstep(ShadowThreshold - ToonSoftness, ShadowThreshold + ToonSoftness, Shadow.TransmissionShadow);
+			}

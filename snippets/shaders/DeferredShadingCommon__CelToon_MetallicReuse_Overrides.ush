@@ -1,0 +1,101 @@
+// =============================================================================
+// CelToon — DeferredShadingCommon GBuffer 解包分叉
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/DeferredShadingCommon.ush
+// 集成方式 : 三个独立 Block（A / B / C），分别对应移动端解包、桌面端
+//            PrecomputedShadowFactors 读回、桌面端派生。
+//
+// 背景    : DeferredShadingCommon 里有两套 GBuffer 解包路径（Mobile & Desktop），
+//           都依赖 Metallic 派生 F0 / DiffuseColor。因为 CelToon 借用 Metallic
+//           引脚存 HighlightIntensity，两条路径都必须分叉处理。
+//           与 GBufferHelpers__CelToon_MetallicReuse_Overrides.ush 的 Block B / C
+//           是同一问题在不同文件里的对应改动。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — Mobile GBuffer 解包：ComputeF0 / DiffuseColor 分叉
+// -----------------------------------------------------------------------------
+// 定位锚点: DecodeGBufferDataMobile(...) 或等价函数内，紧跟
+//           "if (GBuffer.ShadingModelID == SHADINGMODELID_EYE) { GBuffer.Metallic = 0.0; ... }"
+//           之后、"return GBuffer;" 之前。原本是一个无分支的块：
+//               GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, GBuffer.Metallic);
+//               GBuffer.DiffuseColor = GBuffer.BaseColor - GBuffer.BaseColor * GBuffer.Metallic;
+// 替换方式: 包在 if/else 里，CelToon 走 Metallic=0。
+
+	// derived from BaseColor, Metalness, Specular
+	{
+		// CelToon 借用 Metallic GBuffer 通道存 HighlightIntensity，不能参与 F0/Diffuse 推导。
+		BRANCH
+		if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+		{
+			GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, 0.0f);
+			GBuffer.DiffuseColor  = GBuffer.BaseColor;
+		}
+		else
+		{
+			GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, GBuffer.Metallic);
+			GBuffer.DiffuseColor  = GBuffer.BaseColor - GBuffer.BaseColor * GBuffer.Metallic;
+		}
+	}
+
+
+// -----------------------------------------------------------------------------
+// Block B — Desktop GBuffer 解包：PrecomputedShadowFactors 强读（不走 SelectiveOutputMask）
+// -----------------------------------------------------------------------------
+// 定位锚点: DecodeGBufferData(...) 或等价函数内，#if ALLOW_STATIC_LIGHTING 块里，
+//           原本是一行：
+//               GBuffer.PrecomputedShadowFactors = !(GBuffer.SelectiveOutputMask & SKIP_PRECSHADOW_MASK) ? InGBufferE :  ((GBuffer.SelectiveOutputMask & ZERO_PRECSHADOW_MASK) ? 0 :  1);
+// 替换方式: 把那一行包在 if/else 里，CelToon 直读 InGBufferE。
+
+#if ALLOW_STATIC_LIGHTING
+	// CelToon 借用 GBuffer E 存卡通参数，直接读回不走 mask fallback；其他模型维持原逻辑。
+	BRANCH
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		GBuffer.PrecomputedShadowFactors = InGBufferE;
+	}
+	else
+	{
+		GBuffer.PrecomputedShadowFactors = !(GBuffer.SelectiveOutputMask & SKIP_PRECSHADOW_MASK) ? InGBufferE : ((GBuffer.SelectiveOutputMask & ZERO_PRECSHADOW_MASK) ? 0 : 1);
+	}
+#else
+	GBuffer.PrecomputedShadowFactors = half(1.0f);
+#endif
+
+
+// -----------------------------------------------------------------------------
+// Block C — Desktop GBuffer 解包：ComputeF0 / DiffuseColor 分叉（含 SubsurfaceProfile 兼容）
+// -----------------------------------------------------------------------------
+// 定位锚点: DecodeGBufferData(...) 内，紧跟
+//           "if (GBuffer.ShadingModelID == SHADINGMODELID_EYE) { GBuffer.Metallic = 0.0; ... }"
+//           之后、USE_DEVELOPMENT_SHADERS 块之前。原块是：
+//               GBuffer.SpecularColor = ComputeF0(...);
+//               if (UseSubsurfaceProfile(...)) { AdjustBaseColorAndSpecularColorForSubsurfaceProfileLighting(...); }
+//               GBuffer.DiffuseColor = GBuffer.BaseColor - GBuffer.BaseColor * GBuffer.Metallic;
+// 替换方式: 包在 if/else 里，CelToon 走 Metallic=0（并因此跳过 SubsurfaceProfile 调整）。
+
+	// derived from BaseColor, Metalness, Specular
+	{
+		// CelToon 借用 Metallic GBuffer 通道存 HighlightIntensity，不能参与 F0/Diffuse 推导。
+		BRANCH
+		if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+		{
+			GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, 0.0f);
+			GBuffer.DiffuseColor  = GBuffer.BaseColor;
+		}
+		else
+		{
+			GBuffer.SpecularColor = ComputeF0(GBuffer.Specular, GBuffer.BaseColor, GBuffer.Metallic);
+
+			if (UseSubsurfaceProfile(GBuffer.ShadingModelID))
+			{
+				AdjustBaseColorAndSpecularColorForSubsurfaceProfileLighting(GBuffer.BaseColor, GBuffer.SpecularColor, GBuffer.Specular, bChecker);
+			}
+
+			GBuffer.DiffuseColor = GBuffer.BaseColor - GBuffer.BaseColor * GBuffer.Metallic;
+		}
+
+		// ... 其余 Epic 原有 USE_DEVELOPMENT_SHADERS 等分支 ...
+	}

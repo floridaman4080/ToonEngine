@@ -1,0 +1,57 @@
+// =============================================================================
+// CelToon — BasePass 材质阶段：SpecularColor / DiffuseColor 分叉（Metallic 借用）
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/BasePassPixelShader.usf
+// 集成方式 : 两段独立替换（Block A / Block B）。
+//
+// 背景    : 因为 CelToon 借用 Metallic 材质引脚存 HighlightIntensity（GBuffer E .r），
+//           BasePass 阶段所有依赖 Metallic 的派生（F0 / DiffuseColor）都必须对 CelToon
+//           分叉，否则 HighlightIntensity 会被当成真实金属度，高光颜色错乱 + 固有色变黑。
+//           与 GBufferHelpers__CelToon_MetallicReuse_Overrides.ush 的 Block A / C 是一组对偶关系
+//           （Decode 阶段 vs 写入阶段）。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — SpecularColor 派生分叉（在原代码 GBuffer.SpecularColor = ComputeF0(...) 处替换）
+// -----------------------------------------------------------------------------
+// 定位锚点: Epic 原本是一行：
+//               GBuffer.SpecularColor = ComputeF0(Specular, BaseColor, Metallic);
+//           位于 #if !SUBSTRATE_ENABLED || SUBSTRATE_INLINE_SINGLELAYERWATER 块内，
+//           "const bool bChecker = ..." 之后。
+// 替换方式: 把那一行替换为下面的 if/else 块。
+
+	// CelToon 分支（5.7 文档 2.7）：高光 F0 强制按纯介电算，不与 BaseColor 混色，
+	// 保留卡通画面的"纯净高光"语义；普通材质仍按 UE 原公式 lerp(F0, BaseColor, Metallic)。
+	BRANCH
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		GBuffer.SpecularColor = ComputeF0(Specular, BaseColor, 0.0f);
+	}
+	else
+	{
+		GBuffer.SpecularColor = ComputeF0(Specular, BaseColor, Metallic);
+	}
+
+
+// -----------------------------------------------------------------------------
+// Block B — DiffuseColor 派生分叉（在原代码 GBuffer.DiffuseColor = BaseColor - BaseColor * Metallic 处替换）
+// -----------------------------------------------------------------------------
+// 定位锚点: Epic 原本是一行：
+//               GBuffer.DiffuseColor = BaseColor - BaseColor * Metallic;
+//           位于 MATERIAL_NORMAL_CURVATURE_TO_ROUGHNESS 和 POST_PROCESS_SUBSURFACE 块之后，
+//           USE_DEVELOPMENT_SHADERS 之前。
+// 替换方式: 把那一行替换为下面的 if/else 块。
+
+	// CelToon 分支（5.7 文档 2.7）：固有色永远保持 BaseColor，不被 Metallic 吃掉，
+	// 避免金属角色走 CelToon 时整体变暗；普通材质继续用 UE 原公式。
+	BRANCH
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		GBuffer.DiffuseColor = BaseColor;
+	}
+	else
+	{
+		GBuffer.DiffuseColor = BaseColor - BaseColor * Metallic;
+	}

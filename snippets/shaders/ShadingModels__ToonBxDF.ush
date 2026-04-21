@@ -1,0 +1,104 @@
+// =============================================================================
+// CelToon — ToonBxDF（整个方案的核心着色函数）
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/ShadingModels.ush
+// 集成方式 : 两段集成
+//            Part 1 : 把 ToonStep + ToonBxDF 整段粘到文件中部，位于
+//                     PreintegratedSkinBxDF(...) 的 "} return Lighting;" 之后、
+//                     IntegrateBxDF(...) 的 switch 起点之前。
+//            Part 2 : 在 IntegrateBxDF(...) 的 switch 里，紧跟 SHADINGMODELID_EYE
+//                     分支之后、default 之前，追加一个 case 去调用 ToonBxDF。
+//                     （见文件底部的 // --- Part 2 --- 区段）
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+//            算法骨架参考 UE5.7 公开文档的 Toon Shading 思路（smoothstep 三次阈值化 +
+//            Blinn 高光 + Rim），实现细节与参数映射全部独立完成。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Part 1 — Helper + ToonBxDF 函数体
+// -----------------------------------------------------------------------------
+
+// ============================================================================
+// CelToon BxDF（方案 A：融合 5.7 精简算法 + Rim Light + 保留 5.6 签名兼容）
+// ----------------------------------------------------------------------------
+// 设计要点：
+//  1. 三次阈值化（smoothstep 硬切）：漫反射 / 高光 / 边缘光，各一次；
+//  2. Softness 由 Roughness 的后半段（0.5~1.0）映射而来，控制色阶边界软硬；
+//  3. ShadowOffset 来自 CustomData.a（经过 [0,1]->[-1,1] 映射），整体平移 NoL；
+//  4. 高光强度 / 边缘光宽度从 GBuffer E（PrecomputedShadowFactors）读取，
+//     借用前提：项目不用 Lightmap 烘焙，GBuffer E 闲置。详见 ShadingModelsMaterial.ush
+//     里的打包注释（见 snippets/shaders/ShadingModelsMaterial__CelToon_GBufferPacking.ush）。
+// ============================================================================
+
+// smoothstep 版的硬/软切：value 在 [-smoothness, +smoothness] 区间内做 0~1 过渡
+half ToonStep(float value, float smoothness)
+{
+	smoothness = max(smoothness, 0.001f);
+	return smoothstep(-smoothness, smoothness, value);
+}
+
+FDirectLighting ToonBxDF(FGBufferData GBuffer, half3 N, half3 V, half3 L, float Falloff, float NoL, FAreaLight AreaLight, FShadowTerms Shadow)
+{
+	// --- 基础向量：只算三个点积，去掉原版的 Init / SphereMaxNoH / 切线空间等 PBR 包袱 ---
+	float3 H     = normalize(V + L);
+	float  NoH   = saturate(dot(N, H));
+	float  NoV   = saturate(dot(N, V));
+	float  NoLRaw = dot(N, L);              // 保留 [-1, 1]，允许背光侧参与阈值平移
+
+	// --- 参数映射 ---
+	// Softness：Roughness ∈ [0.5, 1.0] → [0, 0.5]，越大色阶边界越软
+	float Softness       = saturate(GBuffer.Roughness - 0.5f);
+	// BlinnPower：Specular 越接近 1，幂次越高，高光越集中（1/(1-x) 爆发式增大）
+	float BlinnPower     = 8.0f / (1.0f - GBuffer.Specular + 0.0001f);
+	// ShadowOffset：美术在 CustomData0 输入 [0, 1]，这里重映射为 [-1, 1] 的 NoL 平移量
+	float ShadowOffset   = GBuffer.CustomData.a * 2.0f - 1.0f;
+	// HighlightIntensity / RimWidth 从 GBuffer E（PrecomputedShadowFactors）读取，
+	// 借用前提：项目不用 Lightmap 烘焙，GBuffer E 闲置。详见 ShadingModelsMaterial.ush 的打包注释。
+	//   美术侧映射：Metallic 材质引脚 -> .r；CustomData1 材质引脚 -> .g
+	//   数值域放大：8 bit [0,1] 精度够用；HighlightIntensity 扩到 [0, 8]，RimWidth 限到 [0, 0.5]
+	float HighlightIntensity = GBuffer.PrecomputedShadowFactors.r * 8.0f;
+	float RimWidth           = GBuffer.PrecomputedShadowFactors.g * 0.5f;
+
+	FDirectLighting Lighting;
+
+	// ------------------------------------------------------------
+	// 1) 漫反射：一次切割，把软 Lambert 切成硬色阶
+	//    公式：Diffuse = FalloffColor * LitMask * Falloff * Lambert(DiffuseColor)
+	// ------------------------------------------------------------
+	float ToonNoL = NoLRaw + ShadowOffset;
+	float LitMask = ToonStep(ToonNoL, Softness);
+	Lighting.Diffuse = AreaLight.FalloffColor * LitMask * Falloff * Diffuse_Lambert(GBuffer.DiffuseColor);
+
+	// ------------------------------------------------------------
+	// 2) 高光：二次切割，把 Blinn-Phong 切成硬圆片
+	//    - 乘 LitMask 保证高光只出现在亮面（阴影里不会冒高光）
+	// ------------------------------------------------------------
+	float RawSpec       = pow(NoH, BlinnPower);
+	float SpecularShape = ToonStep(RawSpec - 0.5f, Softness);
+	Lighting.Specular   = SpecularShape * AreaLight.FalloffColor * Falloff * LitMask
+	                    * GBuffer.SpecularColor * HighlightIntensity;
+
+	// ------------------------------------------------------------
+	// 3) 边缘光：三次切割 + 防与高光重叠
+	//    - RimShape: NoV 越接近 0（视线越侧）越亮
+	//    - RimOverlapMask: 高光点内部不再叠 Rim，避免过曝
+	//    - * 0.5 降低亮度，与高光区分明暗层级
+	// ------------------------------------------------------------
+	float  RimShape       = ToonStep(RimWidth - NoV, Softness);
+	float  RimOverlapMask = 1.0f - SpecularShape;
+	float3 RimLight       = RimShape * AreaLight.FalloffColor * Falloff * LitMask
+	                      * HighlightIntensity * 2.0f;
+	Lighting.Specular    += RimLight * RimOverlapMask;
+
+	// 不透明材质不参与透射
+	Lighting.Transmission = 0;
+	return Lighting;
+}
+
+// -----------------------------------------------------------------------------
+// Part 2 — 在 IntegrateBxDF 的 switch 里加一个 case（位于 SHADINGMODELID_EYE 之后）
+// -----------------------------------------------------------------------------
+
+//     case SHADINGMODELID_CELTOON: // CelToon 卡通着色模型
+//         return ToonBxDF(GBuffer, N, V, L, Falloff, NoL, AreaLight, Shadow);

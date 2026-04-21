@@ -1,0 +1,89 @@
+// =============================================================================
+// CelToon — GBuffer 解包三处关键覆写
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/GBufferHelpers.ush
+// 集成方式 : 三个独立 Block (A / B / C)，在 Epic 原代码对应位置就地替换或插入。
+//
+// 背景    : CelToon 借用 Metallic 材质引脚存 HighlightIntensity（HUD 参数），
+//           因此所有依赖 Metallic 的 F0 / DiffuseColor 推导都必须对 CelToon
+//           分叉处理，否则 HighlightIntensity 会被当成真实金属度，导致
+//           Diffuse 变黑 + SpecularColor 错乱。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — GBufferPreDecode 中 DiffuseColor 初值分叉
+// -----------------------------------------------------------------------------
+// 插入位置: EncodeGBuffer(...) 或 GBufferPreDecode(...) 内，紧接在 Epic 原有
+//           "#if USE_SUBSURFACE_PROFILE_BASE_COLOR_HACK { ... } #endif" 块之后。
+// 替换内容: 原本是一行 "GBuffer.DiffuseColor = OriginalBaseColor - OriginalBaseColor * OriginalMetallic;"
+//           现在包成 if/else：CelToon 走 OriginalBaseColor，其余沿用原式。
+
+	// CelToon 借用 Metallic 材质引脚存 HighlightIntensity，不能参与 Diffuse 推导。
+#if MATERIAL_SHADINGMODEL_CELTOON
+	BRANCH
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		GBuffer.DiffuseColor = OriginalBaseColor;
+	}
+	else
+#endif
+	{
+		GBuffer.DiffuseColor = OriginalBaseColor - OriginalBaseColor * OriginalMetallic;
+	}
+
+
+// -----------------------------------------------------------------------------
+// Block B — GBufferPostDecode 中 PrecomputedShadowFactors 读回跳过 SelectiveOutputMask
+// -----------------------------------------------------------------------------
+// 插入位置: GBufferPostDecode(...) 内，原本紧跟在 "#if ALLOW_STATIC_LIGHTING" 下面
+//           一行 "Ret.PrecomputedShadowFactors = !(Ret.SelectiveOutputMask & 0x2) ? ..."
+//           把那一行包成 "非 CelToon 才跑" 的 if-块。
+// 背景    : BasePass 已为 CelToon 强制写入 GBuffer E（HighlightIntensity/RimWidth），
+//           这里不能再被 SelectiveOutputMask 的 fallback 逻辑覆写回 0 或 1。
+
+#if ALLOW_STATIC_LIGHTING
+	// CelToon 借用 GBuffer E 存卡通参数（HighlightIntensity/RimWidth），直接读回不走 mask fallback；
+	// 其他模型维持原 SelectiveOutputMask 逻辑（SKIP=0x2, ZERO=0x4）。
+	BRANCH
+	if (Ret.ShadingModelID != SHADINGMODELID_CELTOON)
+	{
+		Ret.PrecomputedShadowFactors = !(Ret.SelectiveOutputMask & 0x2) ? Ret.PrecomputedShadowFactors : ((Ret.SelectiveOutputMask & 0x4) ? half(0.0f) : half(1.0f));
+	}
+#else
+	Ret.PrecomputedShadowFactors = half(1.0f);
+#endif
+
+
+// -----------------------------------------------------------------------------
+// Block C — GBufferPostDecode 中 SpecularColor / DiffuseColor 派生分叉
+// -----------------------------------------------------------------------------
+// 插入位置: GBufferPostDecode(...) 内，Epic 原本是一个 "// derived from BaseColor, Metalness, Specular"
+//           注释下的代码块，单纯按 Metallic 计算 F0 / DiffuseColor。
+// 替换内容: 把原块包在 else 里，CelToon 走新分支（强制 Metallic=0）。
+
+	// derived from BaseColor, Metalness, Specular
+	{
+		// CelToon 借用 Metallic GBuffer 通道存 HighlightIntensity，不能参与 F0/Diffuse 推导。
+		// 强制按 "Metallic=0" 处理：DiffuseColor=BaseColor、SpecularColor=电介质 F0。
+		BRANCH
+		if (Ret.ShadingModelID == SHADINGMODELID_CELTOON)
+		{
+			Ret.SpecularColor = ComputeF0(Ret.Specular, Ret.BaseColor, 0.0f);
+			Ret.DiffuseColor  = Ret.BaseColor;
+		}
+		else
+		{
+			Ret.SpecularColor = ComputeF0(Ret.Specular, Ret.BaseColor, Ret.Metallic);
+
+			if (UseSubsurfaceProfile(Ret.ShadingModelID))
+			{
+				AdjustBaseColorAndSpecularColorForSubsurfaceProfileLightingCopyHack(Ret.BaseColor, Ret.SpecularColor, Ret.Specular, bChecker);
+			}
+
+			Ret.DiffuseColor = Ret.BaseColor - Ret.BaseColor * Ret.Metallic;
+		}
+
+		// ... 其余 Epic 原有 USE_DEVELOPMENT_SHADERS / 其它派生 ...
+	}

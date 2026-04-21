@@ -1,0 +1,50 @@
+// =============================================================================
+// CelToon — Reflection Environment 关键覆写
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/ReflectionEnvironmentPixelShader.usf
+// 集成方式 : 两处独立插入（下方 Block A / Block B），按顺序集成即可。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — ReflectionEnvironment() 入口处：CelToon 屏蔽反射环境
+// -----------------------------------------------------------------------------
+// 插入位置: float3 ReflectionEnvironment(FGBufferData GBuffer, ...) 函数体最顶端，
+//           在原有逻辑 ("float4 Color = float4(0,0,0,1);" 之类) 之前。
+// 效果    : CelToon 材质不参与 SSR / 反射捕获 / Lumen 反射，避免出现"金属感"，
+//           保持纯手绘外观。
+
+	// 去除天光带来的反射影响
+	BRANCH
+	if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		return float3(0.0f, 0.0f, 0.0f);
+	}
+
+
+// -----------------------------------------------------------------------------
+// Block B — 非-Substrate 分支：CelToon AO 覆盖 + 天光说明
+// -----------------------------------------------------------------------------
+// 插入位置: #if SUBTRATE_GBUFFER_FORMAT==0 / #else 的 #else 分支内，
+//           紧接在 AmbientOcclusionTexture.SampleLevel(...).r 之后，
+//           同时在 SkyLightDiffuse(...) 调用之后追加那段说明性注释。
+// 效果    : Cel-Toon 的环境光不再叠乘屏幕空间 AO，避免形成第二层环境暗边。
+
+	if (ShadingModelID == SHADINGMODELID_CELTOON)
+	{
+		// Cel-Toon 的环境光不再叠乘屏幕空间 AO，避免形成第二层环境暗边。
+		AmbientOcclusion = 1.0f;
+	}
+
+	// ... 这里是 Epic 原有的 BentNormal / APPLY_SKY_SHADOWING / ENABLE_DYNAMIC_SKY_LIGHT 逻辑 ...
+
+	// 在 SkyLightDiffuse(...) 调用之后，LightAccumulator_Add 之前加下面这段注释，
+	// 说明 CelToon 的天光由 SkyLightingDiffuseShared.ush 的 CelToon 分支统一产出：
+	//   float3 SkyLighting = SkyLightDiffuse(...);
+	//
+	//   // CelToon 的天光已在 SkyLightingDiffuseShared.ush::SkyLightDiffuse() 内部提前 return
+	//   // 固定色（BaseColor × SubColor × SkyLightColor × CELTOON_SKYLIGHT_SCALE），这里 SkyLighting
+	//   // 拿到的就是统一色值，不再需要额外分支处理。
+	//   // 如需完全屏蔽非 Lumen 路径下 CelToon 的天光贡献，解注释下一行即可：
+	//   // if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON) { SkyLighting = 0; }

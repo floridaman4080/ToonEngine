@@ -1,0 +1,49 @@
+// =============================================================================
+// CelToon — Lumen 暗部锁定（IndirectLighting 固定色覆盖）
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/DiffuseIndirectComposite.usf
+// 集成方式 : 插入到主 pass（非 Substrate 分支）的 IndirectLighting 计算之后，
+//            紧跟 Epic 现有代码：
+//                IndirectLighting.Diffuse  = ...;
+//                IndirectLighting.Specular = ...;
+//            之后，OutAddColor / LightAccumulator_Add 之前。
+//            Block A（注释）也建议插在 IndirectLighting.Diffuse 赋值之前做设计说明。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — 在 Cloth 分支之后、IndirectLighting 计算之前，先放一段设计说明注释
+// -----------------------------------------------------------------------------
+
+				// CelToon 不走常规 IndirectLighting 链路——后面会整段覆盖为"固定 ShadowColor"，
+				// 这里不对 DiffuseColor / Occlusion 做任何修改，保持中间结果干净。
+				// 真正的暗部颜色锁定在 IndirectLighting.Diffuse = ... 覆盖处（本文件内靠后）。
+
+
+// -----------------------------------------------------------------------------
+// Block B — IndirectLighting.Diffuse / Specular 计算完成后，做 CelToon 覆盖
+// -----------------------------------------------------------------------------
+
+				// ================================================================
+				// CelToon 暗部锁定（固定 ShadowColor，不被 Lumen / AO / BentNormal 污染）
+				// ----------------------------------------------------------------
+				//  1. IndirectLighting.Diffuse 直接写为 BaseColor * SubColor * CELTOON_SHADOW_AMBIENT，
+				//     彻底绕过 DiffuseIndirectLighting（Lumen GI）、Occlusion.DiffuseOcclusion、
+				//     EnergyPreservationFactor、BackfaceDiffuseIndirectLighting 等所有"场景相关"因素。
+				//  2. IndirectLighting.Specular = 0，与 ReflectionEnvironmentPixelShader.usf
+				//     的 ReflectionEnvironment() 对 CelToon 返回 0 保持一致。
+				//  3. 外部投影仍然生效：LitMask 由 ToonBxDF 内 NoL 色阶切割；外部 CSM/Contact/Object
+				//     shadow 由 DeferredLightingCommon.ush 的 Shadow.SurfaceShadow 乘到"直接光"上，
+				//     在亮面会把像素压回暗部色；暗部本就不吃直接光，颜色保持稳定。
+				//  4. CELTOON_SHADOW_AMBIENT 是硬编码"暗部亮度"，需要调节卡渲"暗面明亮度"时改这里。
+				//     推荐值：0.45（偏写实暗部）/ 0.65（日式明亮卡渲）/ 0.85（极亮、近全亮度）。
+				// ================================================================
+				if (GBuffer.ShadingModelID == SHADINGMODELID_CELTOON)
+				{
+					const float CELTOON_SHADOW_AMBIENT = 0.65f;
+					float3 SubsurfaceColor = ExtractSubsurfaceColor(GBuffer);
+					IndirectLighting.Diffuse      = GBuffer.BaseColor * SubsurfaceColor * CELTOON_SHADOW_AMBIENT;
+					IndirectLighting.Specular     = 0;
+					IndirectLighting.Transmission = 0;
+				}

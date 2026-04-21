@@ -1,0 +1,63 @@
+// =============================================================================
+// CelToon — 静态阴影点积防御（保护借用来的 GBuffer E）
+// -----------------------------------------------------------------------------
+// 目标文件 : Engine/Shaders/Private/DeferredLightingCommon.ush
+// 集成方式 : 三处改动，Block A / Block B / Block C。
+//
+// 背景    : CelToon 借用 GBuffer E（PrecomputedShadowFactors）存卡通参数
+//           （HighlightIntensity / RimWidth）。原本的 Deferred Lighting 会用
+//           dot(ShadowMapChannelMask, half4(1,1,1,1)) 判断当前灯光是否使用静态阴影，
+//           再去 GBuffer E 里点积读出静态阴影因子。
+//
+//           如果不加防御，万一美术误设灯光 ShadowMapChannelMask 非 0，
+//           就会把我们借来存"HighlightIntensity"的通道错当静态阴影读，
+//           表现为高光强度变成了不合理的阴影值（角色乱忽明忽暗）。
+//
+//           Block A 改 GetShadowTermsBase 的签名，加一个默认参数 ShadingModelID；
+//           Block B 在函数内用该参数把 CelToon 的 UsesStaticShadowMap 强制置 0；
+//           Block C 在上层 GetShadowTerms 调用时把 GBuffer.ShadingModelID 传下去。
+//
+// License  : MIT (see LICENSE at repo root). 本文件全部由本仓库作者原创（包含对
+//            Epic 原函数的参数文档中文翻译/补充；该翻译仅为可读性改善，不改变算法）。
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Block A — GetShadowTermsBase 函数签名扩展
+// -----------------------------------------------------------------------------
+// 定位锚点: void GetShadowTermsBase(...) 的参数列表
+// 修改方式: 在最后一个参数 "inout FShadowTerms OutShadow" 之后追加
+//           ", uint ShadingModelID = SHADINGMODELID_DEFAULT_LIT" 默认参数。
+//           为保证向后兼容，必须给默认值。
+
+void GetShadowTermsBase(
+	float SceneDepth,
+	half4 PrecomputedShadowFactors,
+	FDeferredLightData LightData,
+	half4 LightAttenuation,
+	inout FShadowTerms OutShadow,
+	uint ShadingModelID = SHADINGMODELID_DEFAULT_LIT) // CelToon 借 GBuffer E 存卡通参数，需要防御性关闭静态阴影点积
+{
+	// ... 原函数体 ...
+}
+
+// -----------------------------------------------------------------------------
+// Block B — 函数体内：UsesStaticShadowMap 对 CelToon 强制置 0
+// -----------------------------------------------------------------------------
+// 定位锚点: 原函数体内 #if ALLOW_STATIC_LIGHTING 块内，
+//           原本是一行：
+//               half UsesStaticShadowMap = dot(LightData.ShadowMapChannelMask, half4(1, 1, 1, 1));
+// 替换方式: 把那一行改成三元表达式，加一行注释。
+
+		// 防御：CelToon 下 PrecomputedShadowFactors 已被借作卡通参数，强制置 0 避免被误点积读取。
+		half UsesStaticShadowMap = (ShadingModelID == SHADINGMODELID_CELTOON) ? 0.0h : dot(LightData.ShadowMapChannelMask, half4(1, 1, 1, 1));
+
+// -----------------------------------------------------------------------------
+// Block C — 上层 GetShadowTerms(...) 把 ShadingModelID 传下去
+// -----------------------------------------------------------------------------
+// 定位锚点: void GetShadowTerms(...) 内的 GetShadowTermsBase 调用
+// 替换方式: 补一个入参 ShadingModelID。原本是：
+//               GetShadowTermsBase(SceneDepth, PrecomputedShadowFactors, LightData, LightAttenuation, OutShadow);
+// 改为：
+
+	// Get the basic shadow terms（把 ShadingModelID 传下去，让 CelToon 绕开静态阴影点积）
+	GetShadowTermsBase(SceneDepth, PrecomputedShadowFactors, LightData, LightAttenuation, OutShadow, ShadingModelID);
