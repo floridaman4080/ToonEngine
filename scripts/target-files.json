@@ -1,0 +1,141 @@
+{
+    "_comment": "List of 22 UE5.6 source files that hold CelToon-related changes. Each entry has a 'maps_to_snippet' hint (comma-separated) so the release script can suggest which snippet file(s) in ToonEngine likely need updating. If a file has only list-extension style changes (enum append, switch-case append, boolean OR append), maps_to_snippet is empty and the change is typically an integration_notes.md prose update only.",
+
+    "baseline_default": "celtoon-v0.1.0",
+    "ue5_fork_default": "E:\\UECode\\UnrealEngine-5.6",
+
+    "target_files": [
+        {
+            "path": "Engine/Shaders/Private/BasePassCommon.ush",
+            "maps_to_snippet": "",
+            "integration_section": "13",
+            "note": "Enable CustomData / force PrecomputedShadow write path"
+        },
+        {
+            "path": "Engine/Shaders/Private/BasePassPixelShader.usf",
+            "maps_to_snippet": "BasePassPixelShader__CelToon_MetallicReuse_Overrides.usf",
+            "integration_section": "22, 23, 24",
+            "note": "Block A/B are in the mapped snippet; §22 and §24 are list-extensions"
+        },
+        {
+            "path": "Engine/Shaders/Private/DeferredLightingCommon.ush",
+            "maps_to_snippet": "DeferredLightingCommon__CelToon_StaticShadowGuard.ush, DeferredLightingCommon__CelToon_ShadowSoftening.ush",
+            "integration_section": "25, 26",
+            "note": "Two snippets on one file: static-shadow guard (§25) + shadow softening (§26)"
+        },
+        {
+            "path": "Engine/Shaders/Private/DeferredShadingCommon.ush",
+            "maps_to_snippet": "DeferredShadingCommon__CelToon_MetallicReuse_Overrides.ush",
+            "integration_section": "27, 28",
+            "note": "§27 is list-extension; §28 Block A/B/C are in the mapped snippet"
+        },
+        {
+            "path": "Engine/Shaders/Private/DiffuseIndirectComposite.usf",
+            "maps_to_snippet": "DiffuseIndirectComposite__CelToon_ShadowLock.usf",
+            "integration_section": "21",
+            "note": "Lumen dark-side lock (fixed colour override)"
+        },
+        {
+            "path": "Engine/Shaders/Private/GBufferHelpers.ush",
+            "maps_to_snippet": "GBufferHelpers__CelToon_MetallicReuse_Overrides.ush",
+            "integration_section": "19",
+            "note": "Block A/B/C: DiffuseColor init + PrecomputedShadowFactors fallback skip + F0/DiffuseColor derivation"
+        },
+        {
+            "path": "Engine/Shaders/Private/PostProcessGBufferHints.usf",
+            "maps_to_snippet": "",
+            "integration_section": "15",
+            "note": "GBuffer visualiser HUD: print CelToon custom data"
+        },
+        {
+            "path": "Engine/Shaders/Private/ReflectionEnvironmentPixelShader.usf",
+            "maps_to_snippet": "ReflectionEnvironment__CelToon_Overrides.usf",
+            "integration_section": "18",
+            "note": "Block A: suppress reflection env for CelToon; Block B: AO=1 + skylight comment"
+        },
+        {
+            "path": "Engine/Shaders/Private/ShadingModels.ush",
+            "maps_to_snippet": "ShadingModels__ToonBxDF.ush",
+            "integration_section": "20",
+            "note": "Core ToonBxDF function + ToonStep helper + IntegrateBxDF switch case"
+        },
+        {
+            "path": "Engine/Shaders/Private/ShadingModelsMaterial.ush",
+            "maps_to_snippet": "ShadingModelsMaterial__CelToon_GBufferPacking.ush",
+            "integration_section": "14",
+            "note": "CelToon GBuffer packing block (CustomData + borrowed GBuffer E)"
+        },
+        {
+            "path": "Engine/Shaders/Private/SkyLightingDiffuseShared.ush",
+            "maps_to_snippet": "SkyLightingDiffuseShared__CelToon_SkyLightingBranch.ush",
+            "integration_section": "17",
+            "note": "Non-Lumen sky lighting fixed-colour branch"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Classes/Engine/EngineTypes.h",
+            "maps_to_snippet": "",
+            "integration_section": "1",
+            "note": "Register MSM_CelToon in EMaterialShadingModel enum"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Private/Materials/HLSLMaterialTranslator.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "6",
+            "note": "HLSL translator environment define"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Private/Materials/Material.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "7",
+            "note": "Shading model name string mapping"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Private/Materials/MaterialAttributeDefinitionMap.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "12, 16",
+            "note": "§12: material attribute validity table; §16: pin name localisation"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Private/Materials/MaterialIRToHLSLTranslator.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "6",
+            "note": "IR-to-HLSL translator environment define (mirror of §6)"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Private/Materials/MaterialShader.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "8, 9",
+            "note": "§8: shader compile stats bucketing; §9: shader compile flag extraction"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Private/ShaderCompiler/ShaderGenerationUtil.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "10",
+            "note": "GBuffer slot configuration for CelToon"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Public/MaterialShared.h",
+            "maps_to_snippet": "",
+            "integration_section": "5",
+            "note": "Shading model bitfield MATERIALDOMAIN_CELTOON"
+        },
+        {
+            "path": "Engine/Source/Runtime/Engine/Public/Materials/MaterialExpressionShadingModel.h",
+            "maps_to_snippet": "",
+            "integration_section": "11",
+            "note": "Material Expression dropdown entry"
+        },
+        {
+            "path": "Engine/Source/Runtime/RenderCore/Private/ShaderMaterialDerivedHelpers.cpp",
+            "maps_to_snippet": "",
+            "integration_section": "2, 3, 4",
+            "note": "Shading model ID constant + derived flag propagation"
+        },
+        {
+            "path": "Engine/Source/Runtime/RenderCore/Public/ShaderMaterial.h",
+            "maps_to_snippet": "",
+            "integration_section": "2, 3, 4",
+            "note": "Shading model ID constant mirror (header)"
+        }
+    ]
+}

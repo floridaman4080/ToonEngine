@@ -14,3 +14,7 @@ Desktop.ini
 scratch/
 local_notes/
 *.local.md
+
+# Release staging output from scripts/release-public.ps1
+# Contains per-file raw diffs with Epic context — must never be committed.
+build/
